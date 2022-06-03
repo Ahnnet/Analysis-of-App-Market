@@ -1,0 +1,291 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
+
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import confusion_matrix,ConfusionMatrixDisplay
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import KFold
+
+# function to preprocess
+def preprocessing(df):
+    # Convert the columns to camel case
+    for col in df.columns:
+        col1 = col.replace(' ','')
+        df = df.rename(columns={col:col1})
+    print(df.columns)
+
+    # Dropping the following columns - AppId, DeveloperWebsite, DeveloperEmail, PrivacyPolicy, Currency, DeveloperId, ScrapedTime, MinimumAndroid
+    df = df.drop(['AppId','DeveloperWebsite','DeveloperEmail','PrivacyPolicy','Currency','DeveloperId','ScrapedTime','MinimumAndroid'],axis=1)
+    print(df.head())
+
+    print("Dataset information",df.info())
+
+    # Discovering the columns having null values
+    cols = df.columns[df.isnull().any()].to_list()
+    print("Columns having null values are :",cols)
+
+    # Print the number of null values of the columns having vull values
+    for c in cols:
+        print(c,type(c),": ",df[c].isnull().sum())
+
+    # Dropping the following raws - Size, MinimumInstalls, Installs, Appname - that have nan data.
+    # These data are unstable to fill with mean or front & back data
+    df.dropna(subset=['Size','MinimumInstalls','Installs','AppName'],inplace=True)
+
+    # Fill the null values with average
+    df['Rating']  = df['Rating'].astype(float)
+    avg = round(df['Rating'].mean(),1)
+    df['Rating'].fillna(avg,inplace=True)
+
+    df['RatingCount']  = df['RatingCount'].astype(float)
+    avg = round(df['RatingCount'].mean(),1)
+    df['RatingCount'].fillna(avg,inplace=True)
+
+    #Cleaning other values just to include Everyone, Teens and Adult
+    df['ContentRating'] = df['ContentRating'].replace('Unrated',"Everyone")
+    df['ContentRating'] = df['ContentRating'].replace('Mature 17+',"Adults")
+    df['ContentRating'] = df['ContentRating'].replace('Adults only 18+',"Adults")
+    df['ContentRating'] = df['ContentRating'].replace('Everyone 10+',"Everyone")
+    print(df['ContentRating'].value_counts())
+
+    # CLeaning the Installs column so as to convert it into numeric
+    df.Installs = df.Installs.str.replace(',','')
+    df.Installs = df.Installs.str.replace('+','')
+    df.Installs = df.Installs.str.replace('Free','0')
+    df['Installs'] = pd.to_numeric(df['Installs'])
+    
+    # Cleaning the Size columns
+    df['Size']=df['Size'].str.replace('Varies with device', '0k')
+    df['Size']=df['Size'].str.replace('G','000000k')
+    df['Size']=df['Size'].str.replace('M','000k')
+    df['Size']=df['Size'].str.replace('k','')
+    df['Size']=df['Size'].str.replace(',','')
+    df['Size']=df['Size'].astype(float)
+    avg = round(df['Size'].mean(),1)
+    df['Size']=df['Size'].replace(0, avg)
+
+    # Dividing price by range to avoid influences from outliers
+    df['PriceRange'] = pd.cut(df['Price'],bins=[0,0.19,9.99,29.99,410],labels=['Free','Low','Mid','High'],include_lowest=True)
+    print(df['PriceRange'].value_counts())
+
+    # Cleaning data that are 'price is 0' but not free
+    print(df.Free.value_counts())
+    print("Apps that have Price = 0, have Free column True")
+    df.loc[(df.Price==0) & (df.Free==False),'Free'] = True
+    print(df.Free.value_counts())
+
+    df['Type'] = np.where(df['Free'] == True,'Free','Paid')
+    df.drop(['Free'],inplace=True,axis=1)
+
+    # Dividing rating count by range
+    df['RatingType'] = 'NoRating'
+    df.loc[(df['RatingCount'] > 0) & (df['RatingCount'] <= 10000.0),'RatingType'] = 'Less than 10K'
+    df.loc[(df['RatingCount'] > 10000) & (df['RatingCount'] <= 500000.0),'RatingType'] = 'Between 10K and 500K'
+    df.loc[(df['RatingCount'] > 500000) & (df['RatingCount'] <= 138557570.0),'RatingType'] = 'More than 500K'
+    print(df.RatingType.value_counts())
+
+    # Converting categorical data to numerical data
+    columns = ['Category', 'Type', 'ContentRating', 'AdSupported', 'EditorsChoice', 'InAppPurchases', 'RatingType', 'PriceRange']
+    df = encoding(df, columns)
+    
+    # Checking the features for reduction feature using linear regression
+    reduction = ['Size', 'MaximumInstalls', 'Rating']
+
+    for i in reduction:
+        line = LinearRegression()
+        X = df[i].values.reshape(-1,1)
+        y = df['RatingType']
+        line.fit(X,y)
+        print("Linear regression score between {} and RatingType : {:.5f}".format(i,line.score(X,y)))
+    """
+    Rating is unproper data. Our prediction is about relation between rating count and other
+    features, and feature 'rating' can inturrupt our analysis because
+    it's relation with rating count is already enough certainty.
+
+    """
+    
+    #Exploration of scaled data
+    h = df.hist(figsize=(30,20))
+    
+    return df
+
+# Encoding with LabelEncoder
+def encoding(df, columns):
+    data = df.copy()
+    labelEncoder = LabelEncoder()
+
+    # Encoding for all columns
+    for col in columns:
+        labelEncoder.fit(data[col])
+        data[col] = labelEncoder.transform(data[col])
+
+    return data
+
+# Scaling with StanderScaler
+def scaling(X):
+    standard_scaler = StandardScaler()
+    X = standard_scaler.fit_transform(X)
+
+    return X
+
+# Performing a linear regression on splited X and y
+def linearRegression(X_train, X_test, y_train, y_test):
+    reg = LinearRegression()    # An object for linear regression
+    reg.fit(X_train, y_train)   # Fit linear model
+    y_pred = reg.predict(X_test)    # Predict the ratingType
+    reg_acc = round(reg.score(X_test, y_test)*100, 3)   # Compute the accuracy
+
+    return y_pred, reg_acc  # Return the predicted values and accuracy
+
+# Performing a decision tree classifier on splited X and y
+def decisionTree(X_train, X_test, y_train, y_test):
+    dcTree = DecisionTreeClassifier()   # An object for decision tree classifier
+    dcTree.fit(X_train, y_train)    # Fit linear model
+    y_pred = dcTree.predict(X_test) # Predict the ratingType
+    dcTree_acc = round(dcTree.score(X_test, y_test)*100, 3) # Compute the accuracy
+
+    return y_pred, dcTree_acc   # Return the predicted values and accuracy
+
+# Gathering the modeling performed with list
+def modeling(X_train, X_test, y_train, y_test):
+    lin = list()
+    tree = list()
+
+    # Appending the prediction and accuracy
+    lin.append(linearRegression(X_train, X_test, y_train, y_test))
+    tree.append(decisionTree(X_train, X_test, y_train, y_test))
+
+    return lin, tree
+
+def func_kfold(X, y, k):
+    n = list()
+    for i in range(0, k):
+        n.append(i)
+    i=0
+    
+    # Scaling X data
+    X = scaling(X)
+
+    # prepare cross validation
+    kf = KFold(n_splits=k, shuffle=True, random_state=1)
+
+    pred_n_acc_n_test = dict()
+
+    # enumerate splits
+    for train, test in kf.splits(X, y):
+        X_train, X_test = X[train], X[test]
+        y_train, y_test = y[train], y[test]
+
+        # Builing models
+        lin, tree = modeling(X_train, X_test, y_train, y_test)
+        # Store predicted values, accuracy and test data in dictionary
+        lin = {'lin':[{'y_pred':lin[0][0]}, {'acc':lin[0][1]}, {'y_test':y_test}]}
+        tree = {'tree':[{'y_pred':tree[0][0]}, {'acc':tree[0][1]}, {'y_test':y_test}]}
+        
+        pred_n_acc_n_test[n[i]] = [dict(lin), dict(tree)]
+        i += 1
+    return pred_n_acc_n_test
+
+# autoML function : Find the best score(accuracy) by setting k to 3,5,10 for all modeling
+def autoML():
+    case = dict()
+    scores = list()
+    y_preds = list()
+    y_tests = list()
+    models = ['lin', 'tree']
+    nk = [3, 5, 10]
+
+    # Setting k to 3, 5, 10
+    for k in nk:
+        case['k='+str(k)]=func_kfold(np.array(X), y, k)
+        for i in range(0, k):
+            for n in range(0, len(case['k='+str(k)][i])):
+                for model in models:
+                    # Store predicted values, accuracy and test data for linear regression model
+                    if model in case['k='+str(k)][i][n]:
+                        y_preds.append(case['k='+str(k)][i][n][model][0]['y_pred'])
+                        scores.append(case['k='+str(k)][i][n][model][1]['acc'])
+                        y_tests.append(case['k='+str(k)][i][n][model][2]['y_test'])
+                    # Store predicted values, accuracy and test data for decision tree classifier model
+                    elif model in case['k='+str(k)][i][n]:
+                        y_preds.append(case['k='+str(k)][i][n][model][0]['y_pred'])
+                        scores.append(case['k='+str(k)][i][n][model][1]['acc'])
+                        y_tests.append(case['k='+str(k)][i][n][model][2]['y_test'])
+
+    bestScore = max(scores)
+    index = scores.index(bestScore)
+    bestPredict = y_preds[index]
+    y_test = y_tests[index]
+    model = str()
+    k = int()
+
+    # Find out which model has the best score
+    if index % len(models) == 0:
+        model = 'Linear Regression'
+    elif index % len(models) == 1:
+        model = 'DecisionTreeClassifier'
+
+    # Find out what k has the best score
+    if len(scores) - len(models)*nk[0] <= 0:
+        kNumber = 'k=3'
+    elif len(scores) - len(models)*nk[0] - len(models)*nk[1] <= 0:
+        kNumber = 'k=5'
+    elif len(scores) - len(models)*nk[0] - len(models)*nk[1] - len(models)*nk[2]<= 0:
+        kNumber = 'k=10'
+
+    return bestScore, bestPredict, y_test, model, kNumber
+
+
+# Read the dataset
+df = pd.read_csv("Google-Playstore.csv")
+# Because it is too much data, the number of data was adjusted through sampling.
+df=df.sample(frac=0.05,replace=True,random_state=1)
+print(df.head())
+
+# Data preprocessing
+df = preprocessing(df)
+print(df.head())
+
+# Setting target feature
+X = df.drop(['AppName','Size', 'MinimumInstalls', 'Released','RatingCount' ,'Type','MaximumInstalls','Price','LastUpdated','Rating','RatingType'],axis=1)
+y = df['RatingType'].values
+
+# Find out the best score, prediction, test data, model, and k
+bestScore, bestPredict, y_test, model, k = autoML()
+
+# Print the Result
+print("="*15, "Result", "="*15)
+print("The best model to predict is", model)
+print("The best accuracy is", bestScore, '%')
+print("The best score is gotten when", k)
+
+# Visualizing the confusion matrix for y_pred and y_test with best score
+cm = confusion_matrix(bestPredict,y_test)
+cmd = ConfusionMatrixDisplay(cm,display_labels =['NoRating','Less than 10K','Between 10K and 500K','More than 500K'])
+fig, ax = plt.subplots(figsize=(12,12));
+plt.title(f"Confusion Matrix {model}")
+cmd.plot(ax=ax);
+plt.show()
+
+# Decision tree visualization 
+from sklearn.model_selection import train_test_split
+feature_name2 = ['Category', 'Type', 'ContentRating', 'AdSupported', 'EditorsChoice', 'InAppPurchases', 'PriceRange']
+class_name2 = ['NoRating', 'Less than 10K', 'Between 10K and 500K', 'More than 500K']
+X_train,X_test,y_train,y_test = train_test_split(X,y,test_size=0.3,random_state=20, shuffle=True, stratify=y)
+dcTree = DecisionTreeClassifier()
+dcTree.fit(X_train, y_train)
+y_pred = dcTree.predict(X_test)
+dcTree_acc = round(dcTree.score(X_test, y_test)*100, 3)
+
+from sklearn.tree import export_graphviz
+export_graphviz(model, out_file="tree.dot",class_names=class_name2, feature_names=feature_name2, impurity=True, filled=True)
+
+import graphviz
+with open("tree.dot") as f:
+    dot_graph=f.read()
+src=graphviz.Source(dot_graph)
+src
